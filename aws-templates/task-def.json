@@ -1,0 +1,23 @@
+{
+  "family": "my-task",
+  "networkMode": "awsvpc",
+  "containerDefinitions": [
+    {
+      "name": "my-container",
+      "image": "884410041694.dkr.ecr.us-east-1.amazonaws.com/vprofileappimg:latest",
+      "cpu": 256,
+      "memory": 512,
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 8080,
+          "protocol": "tcp"
+        }
+      ]
+    }
+  ],
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::884410041694:role/ecsTaskExecutionRole"
+}

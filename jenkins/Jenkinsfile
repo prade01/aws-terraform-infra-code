@@ -1,0 +1,119 @@
+pipeline {
+    agent any
+
+    environment {
+        AWS_REGION = 'us-east-1'
+    }
+
+    stages {
+
+        // 📥 Checkout DevOps Repo
+        stage('Checkout DevOps Repo') {
+            steps {
+                dir('devops_infra') {
+                    git url: 'https://github.com/your-org/devops-repo.git', branch: 'main'
+                }
+            }
+        }
+
+        // 📥 Checkout App Repo
+        stage('Checkout App Repo') {
+            steps {
+                dir('app') {
+                    git url:'git@github.com:prade01/demo-project.git', branch:'jdk17'
+                }
+            }
+        }
+
+        // 🔧 Copy App into Docker Context
+        stage('Prepare Build Context') {
+            steps {
+                sh '''
+                rm -rf devops/app
+                cp -r app devops/
+                '''
+            }
+        }
+
+        // 🌍 Terraform Infra
+        stage('Terraform Apply') {
+            steps {
+                dir('devops/terraform') {
+                    sh '''
+                    terraform init
+                    terraform apply -auto-approve
+                    '''
+                }
+            }
+        }
+
+        // 📤 Fetch Outputs
+        stage('Fetch Terraform Outputs') {
+            steps {
+                dir('devops/terraform') {
+                    script {
+                        env.ECR_REPO = sh(script: "terraform output -raw ecr_repo_url", returnStdout: true).trim()
+                        env.CLUSTER = sh(script: "terraform output -raw cluster_name", returnStdout: true).trim()
+                        env.TASK_FAMILY = sh(script: "terraform output -raw task_family", returnStdout: true).trim()
+                        env.SG_ID = sh(script: "terraform output -raw sg_id", returnStdout: true).trim()
+                        env.SUBNET_ID = sh(script: "terraform output -raw subnet_id", returnStdout: true).trim()
+                    }
+                }
+            }
+        }
+
+        // 🐳 Build & Push Docker
+        stage('Build & Push Image') {
+            steps {
+                dir('devops') {
+                    sh '''
+                    aws ecr get-login-password --region $AWS_REGION | \
+                    docker login --username AWS --password-stdin $ECR_REPO
+
+                    docker build -t app:latest .
+
+                    docker tag app:latest $ECR_REPO:latest
+
+                    docker push $ECR_REPO:latest
+                    '''
+                }
+            }
+        }
+/*
+
+        // 🧾 Update Task Definition
+        stage('Update Task Definition') {
+            steps {
+                dir('devops') {
+                    sh '''
+                    IMAGE_URI=$ECR_REPO:latest
+
+                    sed "s|IMAGE_URI|$IMAGE_URI|g" taskdef-template.json > taskdef-final.json
+
+                    aws ecs register-task-definition \
+                    --cli-input-json file://taskdef-final.json
+                    '''
+                }
+            }
+        }
+
+        // 🚀 Run ECS Task
+        stage('Run ECS Task') {
+            steps {
+                sh '''
+                TASK_DEF_ARN=$(aws ecs describe-task-definition \
+                --task-definition $TASK_FAMILY \
+                --query "taskDefinition.taskDefinitionArn" \
+                --output text)
+
+                aws ecs run-task \
+                --cluster $CLUSTER \
+                --launch-type FARGATE \
+                --network-configuration "awsvpcConfiguration={subnets=[$SUBNET_ID],securityGroups=[$SG_ID],assignPublicIp=ENABLED}" \
+                --task-definition $TASK_DEF_ARN
+                '''
+            }
+        }
+*/
+    }
+}
