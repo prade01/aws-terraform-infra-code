@@ -1,4 +1,4 @@
-FROM maven:3.9.9-eclipse-temurin-21-jammy AS build
+FROM maven:3.9.9-eclipse-temurin-21-jammy AS BUILD     
 
 #WORKDIR /app
 #COPY . .
@@ -19,7 +19,7 @@ LABEL "Project"="Vprofile"
 LABEL "Author"="Pradeep Sharma"
 
 RUN rm -rf /usr/local/tomcat/webapps/*
-COPY --from=build /app/target/vprofile-v2.war /usr/local/tomcat/webapps/ROOT.war
+COPY --from=BUILD /app/target/vprofile-v2.war /usr/local/tomcat/webapps/ROOT.war
 
 EXPOSE 8080
 CMD ["catalina.sh", "run"]

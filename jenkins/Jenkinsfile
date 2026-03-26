@@ -1,14 +1,36 @@
+def COLOR_MAP = [
+    'SUCCESS': 'good',
+    'FAILURE': 'danger',
+    'ABORTED': 'warning',
+]
 pipeline {
     agent any
 
+    tools {
+        terraform 'terraform'
+        ansible 'ansible'
+        maven 'MAVEN3.9'
+        jdk 'JDK17'
+    }
+
     environment {
-        AWS_REGION = 'us-east-1'
+        SLACK_CHANNEL = '#devopscicd'   // Slack Channel Name
+        DOCKER_BUILDKIT = '0'    // For SSH Forwarding 0 is Disabled, 1 is enabled
+        imageTag = "${BUILD_NUMBER}"  // IMAGE TAG WITH BUILD_NUMBER
+        dockerRegistry = "https://index.docker.io/v1/"  //  DOCKER URL
+        //ecrRegistry = "https://ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com"  // AWS ECR URL
+        dockerImages = "prade01/vproapp"  // DOCKER URI
+        dockerRepo = "vproapp"   // DOCKER REPO NAME
+        ecrRepo = "vprofileappimg"    // AWS ECR REPO NAME
+        dockerCredential = 'dockertoken'  // DOCKER CREDS
+        awsCredential = 'ecr:us-east-1:awscreds'  // AWS CREDS
+        awsRegion = "us-east-1"   //  AWS REGION
     }
 
     stages {
 
-        // 📥 Checkout DevOps Repo
-        stage('Checkout DevOps Repo') {
+// Checkout CI Repo
+        stage('Checkout Configuration Repo') {
             steps {
                 dir('ci') {
                     git url: 'https://github.com/prade01/aws-terraform-infra-code.git', branch: 'local'
@@ -16,7 +38,7 @@ pipeline {
             }
         }
 
-        // 📥 Checkout App Repo
+// Checkout App Repo
         stage('Checkout App Repo') {
             steps {
                 dir('app') {
@@ -25,7 +47,7 @@ pipeline {
             }
         }
 
-        // 🔧 Copy App into Docker Context
+// Copy App into Docker Context
         stage('Prepare Build Context') {
             steps {
                 sh '''
@@ -35,87 +57,216 @@ pipeline {
             }
         }
 
-        // 🌍 Terraform Infra
+
+
+// USING ANSIBLE TO INSTALL TERRAFORM ON LINUX        
+        stage('Checking Ansible Version Installed') {
+            steps {
+                sh 'ansible --version'
+            }
+        }
+        
+        stage('Install Terraform using Ansible') {
+            steps {
+                dir('ci/ansible') {
+                    sh '''
+                    ansible-playbook install-terraform.yml
+                    '''
+                }
+            }
+        }
+
+        stage('Verify Terraform') {
+            steps {
+                sh '''
+                terraform -v
+                '''
+            }
+        }
+
+// Terraform Infra Creation on AWS
         stage('Terraform Apply') {
             steps {
                 dir('ci/terraform') {
                     sh '''
                     terraform init
+                    terraform plan -detailed-exitcode || true
                     terraform apply -auto-approve
                     '''
                 }
             }
         }
 
-        // 📤 Fetch Outputs
+
+
+// Fetch Terraform Outputs
         stage('Fetch Terraform Outputs') {
             steps {
                 dir('ci/terraform') {
                     script {
-                        env.ECR_REPO = sh(script: "terraform output -raw ecr_repo_url", returnStdout: true).trim()
-                        env.CLUSTER = sh(script: "terraform output -raw cluster_name", returnStdout: true).trim()
-                        env.TASK_FAMILY = sh(script: "terraform output -raw task_family", returnStdout: true).trim()
+                        env.ecrImages = sh(script: "terraform output -raw ecr_repo_url", returnStdout: true).trim()
+                        env.ecsCluster = sh(script: "terraform output -raw cluster_name", returnStdout: true).trim()
+                        env.ecsTask = sh(script: "terraform output -raw task_family", returnStdout: true).trim()
                         env.SG_ID = sh(script: "terraform output -raw sg_id", returnStdout: true).trim()
                         env.SUBNET_ID = sh(script: "terraform output -raw subnet_id", returnStdout: true).trim()
                     }
                 }
             }
         }
-/*
 
-        // 🐳 Build & Push Docker
-        stage('Build & Push Image') {
+
+        
+        stage('Build Code') {
             steps {
-                dir('ci') {
-                    sh '''
-                    aws ecr get-login-password --region $AWS_REGION | \
-                    docker login --username AWS --password-stdin $ECR_REPO
-
-                    docker build -t app:latest .
-
-                    docker tag app:latest $ECR_REPO:latest
-
-                    docker push $ECR_REPO:latest
-                    '''
-                }
-            }
-        }
-*/
-/*
-
-        // 🧾 Update Task Definition
-        stage('Update Task Definition') {
-            steps {
-                dir('ci') {
-                    sh '''
-                    IMAGE_URI=$ECR_REPO:latest
-
-                    sed "s|IMAGE_URI|$IMAGE_URI|g" taskdef-template.json > taskdef-final.json
-
-                    aws ecs register-task-definition \
-                    --cli-input-json file://taskdef-final.json
-                    '''
+                dir('ci/app') {
+                    sh 'mvn package -DskipTests'
+                    archiveArtifacts artifacts: '**/*.war'
                 }
             }
         }
 
-        // 🚀 Run ECS Task
-        stage('Run ECS Task') {
+
+
+
+
+// DOCKERHUB
+// Below Two Stage required for Single-Stage Dockerfile...
+
+        stage('Prepare Docker Context - SingleStage') {
             steps {
                 sh '''
-                TASK_DEF_ARN=$(aws ecs describe-task-definition \
-                --task-definition $TASK_FAMILY \
-                --query "taskDefinition.taskDefinitionArn" \
-                --output text)
-
-                aws ecs run-task \
-                --cluster $CLUSTER \
-                --launch-type FARGATE \
-                --network-configuration "awsvpcConfiguration={subnets=[$SUBNET_ID],securityGroups=[$SG_ID],assignPublicIp=ENABLED}" \
-                --task-definition $TASK_DEF_ARN
+                rm -rf ci/docker-files/app/*.war || true
+                cp ci/app/target/*.war ci/docker-files/app/vprofile-v2.war
                 '''
             }
         }
-*/
+
+// BUILDING DOCKER IMAGE
+
+        stage('Build App Image - SingleStage') {
+            steps{
+                dir('ci') {
+                    script {
+                        dockerImage = docker.build(
+                            dockerImages + ":${BUILD_NUMBER}",
+                            "./docker-files/app/")
+                    }
+                }
+            }
+        }
+
+// PUSH DOCKER BUILD IMAGE TO DOCKERHUB USING SINGLESTAGE FILE
+
+        stage('Push To DockerHub') {
+            steps {
+                script {
+                    docker.withRegistry(dockerRegistry, dockerCredential) {
+                    dockerImage.push("${BUILD_NUMBER}")
+                    dockerImage.push("latest")
+                    }
+                }
+            }
+        }  
+
+
+// AWS CLOUD ECR & ECS
+// BUILD DOCKER IMAGE USING MULTISTAGE FILE
+        stage('Prepare Docker Context - Multistage') {
+            steps {
+                sh '''
+                rm -rf ci/docker-files/app/multistage/app || true
+                mkdir -p ci/docker-files/app/multistage/app/
+                cp -r app/* ci/docker-files/app/multistage/app/
+                '''
+            }
+        }
+
+
+        
+        stage('Build App Image - MultiStage') {
+            steps {
+                dir('ci'){
+                    script {
+                        ecrImage = docker.build(
+                                ecrImages + ":$BUILD_NUMBER",
+                                "./docker-files/app/multistage/")
+                    }
+                }
+            }
+        }
+
+
+
+// PUSH BUILD IMAGE TO AWS ECR
+        stage('Push To AWS ECR') {
+            steps {
+                script {
+                    def ACCOUNT_ID = sh(
+                        script: "aws sts get-caller-identity --query Account --output text",
+                        returnStdout: true
+                    ).trim()
+
+                    env.ecrRegistry = "${ACCOUNT_ID}.dkr.ecr.${awsRegion}.amazonaws.com"
+
+                    docker.withRegistry("https://${ecrRegistry}", awsCredential) {
+                        ecrImage.push("${BUILD_NUMBER}")
+                        ecrImage.push("latest")
+                    }
+                }
+            }
+        }
+
+
+
+//  Update Task Definition
+        stage('Update Task Definition') {
+            steps {
+                script {
+                    def ACCOUNT_ID = sh(
+                        script: "aws sts get-caller-identity --query Account --output text",
+                        returnStdout: true
+                        ).trim()
+                    
+                    def IMAGE = "${ecrImages}:latest"
+
+                    // Replace placeholder ACCOUNT_ID, IMAGE_URI
+                    sh """
+                    sed -i 's|ACCOUNT_ID|${ACCOUNT_ID}|g' ci/aws-templates/task-def.json
+                    sed -i 's|IMAGE_URI|${IMAGE}|g' ci/aws-templates/task-def.json
+                    """
+
+                    // Register task definition
+                    sh """
+                    aws ecs register-task-definition \
+                    --cli-input-json file://ci/aws-templates/task-def.json
+                    """
+                }
+            }
+        }
+
+//  RUN ECS TASK on FARGATE SERVERLESS COMPUTE
+        stage('Run ECS Task') {
+            steps {
+                sh """
+                aws ecs run-task \
+                --cluster ${ecsCluster} \
+                --launch-type FARGATE \
+                --network-configuration "awsvpcConfiguration={subnets=[${SUBNET_ID}],securityGroups=[${SG_ID}],assignPublicIp=ENABLED}" \
+                --task-definition ${ecsTask}
+                """
+            }
+        }
+    }
+// Stages END
+
+// Slack Notification...
+    post {
+
+        always {
+
+            slackSend channel: "${SLACK_CHANNEL}",
+            color: COLOR_MAP[currentBuild.currentResult],
+            message: "*${currentBuild.currentResult}:* Job ${env.JOB_NAME} build ${env.BUILD_NUMBER}\n${env.BUILD_URL}"
+        }
     }
 }
