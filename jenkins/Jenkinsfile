@@ -10,8 +10,8 @@ pipeline {
         // 📥 Checkout DevOps Repo
         stage('Checkout DevOps Repo') {
             steps {
-                dir('devops_infra') {
-                    git url: 'https://github.com/your-org/devops-repo.git', branch: 'main'
+                dir('ci') {
+                    git url: 'https://github.com/prade01/aws-terraform-infra-code.git', branch: 'local'
                 }
             }
         }
@@ -29,8 +29,8 @@ pipeline {
         stage('Prepare Build Context') {
             steps {
                 sh '''
-                rm -rf devops/app
-                cp -r app devops/
+                rm -rf ci/app
+                cp -r app ci/
                 '''
             }
         }
@@ -38,7 +38,7 @@ pipeline {
         // 🌍 Terraform Infra
         stage('Terraform Apply') {
             steps {
-                dir('devops/terraform') {
+                dir('ci/terraform') {
                     sh '''
                     terraform init
                     terraform apply -auto-approve
@@ -50,7 +50,7 @@ pipeline {
         // 📤 Fetch Outputs
         stage('Fetch Terraform Outputs') {
             steps {
-                dir('devops/terraform') {
+                dir('ci/terraform') {
                     script {
                         env.ECR_REPO = sh(script: "terraform output -raw ecr_repo_url", returnStdout: true).trim()
                         env.CLUSTER = sh(script: "terraform output -raw cluster_name", returnStdout: true).trim()
@@ -61,11 +61,12 @@ pipeline {
                 }
             }
         }
+/*
 
         // 🐳 Build & Push Docker
         stage('Build & Push Image') {
             steps {
-                dir('devops') {
+                dir('ci') {
                     sh '''
                     aws ecr get-login-password --region $AWS_REGION | \
                     docker login --username AWS --password-stdin $ECR_REPO
@@ -79,12 +80,13 @@ pipeline {
                 }
             }
         }
+*/
 /*
 
         // 🧾 Update Task Definition
         stage('Update Task Definition') {
             steps {
-                dir('devops') {
+                dir('ci') {
                     sh '''
                     IMAGE_URI=$ECR_REPO:latest
 
