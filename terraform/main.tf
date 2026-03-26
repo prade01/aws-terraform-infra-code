@@ -67,7 +67,7 @@ resource "aws_iam_role_policy_attachment" "ecs_policy" {
 }
 
 # ECS Task Definition (initial dummy image)
-resource "aws_ecs_task_definition" "task" {
+/*resource "aws_ecs_task_definition" "task" {
   family                   = "${var.app_name}-task"
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
@@ -89,3 +89,4 @@ resource "aws_ecs_task_definition" "task" {
     }
   ])
 }
+*/
